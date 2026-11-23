@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Targeted Average</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1c2430; --muted:#667085; --accent:#1f6feb; --line:#e3e6eb; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width: 620px; margin: 0 auto; padding: 32px 16px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin: 12px 0 4px; }
+  input[type=number], input[type=date] { width:100%; padding:10px 12px; font-size:1rem; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .row3 { display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .row2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .days { display:flex; flex-wrap:wrap; gap:6px 14px; margin-top:4px; }
+  .days label { display:flex; align-items:center; gap:5px; margin:0; color:var(--ink); font-size:.9rem; }
+  button { margin-top: 18px; padding: 10px 16px; font-size: 1rem; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  button.secondary { background: #e9edf3; color: var(--ink); margin-left: 8px; }
+  #msg { color:#b42318; margin-top:12px; min-height:1.2em; font-size:.9rem; }
+  #range { color:var(--muted); font-size:.9rem; margin: 18px 0 8px; }
+  table { width:100%; border-collapse: collapse; }
+  td, th { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-variant-numeric: tabular-nums; }
+  th { color:var(--muted); font-weight:500; font-size:.85rem; }
+  tfoot td { font-weight:600; border-bottom:0; }
+  #out { display:none; margin-top: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Targeted Average</h1>
+  <p class="sub">Every number stays within average ± range, the average comes out exactly as entered, and each number gets a date spread evenly across your timespan.</p>
+  <div class="card">
+    <div class="row3">
+      <div><label for="avg">Target average</label><input id="avg" type="number" step="any" value="32.79"></div>
+      <div><label for="spread">± range</label><input id="spread" type="number" step="any" min="0" value="8.26"></div>
+      <div><label for="n">How many numbers</label><input id="n" type="number" step="1" min="1" value="8"></div>
+    </div>
+    <div class="row2">
+      <div><label for="from">Timespan: from</label><input id="from" type="date"></div>
+      <div><label for="to">Timespan: to</label><input id="to" type="date"></div>
+    </div>
+    <label>Days to use</label>
+    <div class="days" id="days">
+      <label><input type="checkbox" value="1" checked> Mon</label>
+      <label><input type="checkbox" value="2" checked> Tue</label>
+      <label><input type="checkbox" value="3" checked> Wed</label>
+      <label><input type="checkbox" value="4" checked> Thu</label>
+      <label><input type="checkbox" value="5" checked> Fri</label>
+      <label><input type="checkbox" value="6"> Sat</label>
+      <label><input type="checkbox" value="0"> Sun</label>
+    </div>
+    <button id="go">Generate</button><button id="copy" class="secondary">Copy table</button>
+    <div id="msg"></div>
+    <div id="out">
+      <div id="range"></div>
+      <table>
+        <thead><tr><th>#</th><th>Date</th><th>Day</th><th>Value</th></tr></thead>
+        <tbody id="rows"></tbody>
+        <tfoot><tr><td colspan="3">Average</td><td id="avgOut"></td></tr></tfoot>
+      </table>
+    </div>
+  </div>
+</main>
+<script>
+function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+
+// Works in whole hundredths so the average is exact (no floating-point drift)
+function generate(target, n, spread, decimals = 2) {
+  const scale = 10 ** decimals;
+  const t = Math.round(target * scale);
+  const lo = t - Math.round(spread * scale);
+  const hi = t + Math.round(spread * scale);
+  const total = t * n;
+  const vals = Array.from({ length: n }, () => randInt(lo, hi));
+  let diff = total - vals.reduce((s, v) => s + v, 0);
+  while (diff !== 0) {
+    const i = randInt(0, n - 1);
+    const room = diff > 0 ? hi - vals[i] : vals[i] - lo;
+    if (room <= 0) continue;
+    const step = randInt(1, Math.min(room, Math.abs(diff)));
+    vals[i] += diff > 0 ? step : -step;
+    diff += diff > 0 ? -step : step;
+  }
+  return vals.map(v => v / scale);
+}
+
+// Parse "YYYY-MM-DD" as a local date (avoids timezone shifts)
+function parseDate(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+
+// All allowed days between from and to (inclusive)
+function eligibleDays(from, to, allowed) {
+  const out = [];
+  for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+    if (allowed.includes(d.getDay())) out.push(new Date(d));
+  }
+  return out;
+}
+
+// Split the eligible days into n equal segments and pick one random day in each,
+// so dates are spread as evenly as possible. Returned in date order.
+function pickDates(days, n) {
+  const m = days.length, out = [];
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor(i * m / n);
+    const b = Math.max(a, Math.floor((i + 1) * m / n) - 1);
+    out.push(days[randInt(a, b)]);
+  }
+  return out;
+}
+
+const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const fmt = d => String(d.getDate()).padStart(2, "0") + "-" + MON[d.getMonth()] + "-" + d.getFullYear();
+
+const $ = id => document.getElementById(id);
+let current = [];
+
+function run() {
+  const target = parseFloat($("avg").value);
+  const spread = parseFloat($("spread").value);
+  const n = parseInt($("n").value, 10);
+  const msg = $("msg");
+  msg.style.color = "";
+  msg.textContent = "";
+  if (!isFinite(target) || !isFinite(spread) || spread < 0 || !Number.isInteger(n) || n < 1) {
+    msg.textContent = "Please enter a valid average, a range of 0 or more, and a whole number of 1 or more.";
+    return;
+  }
+  if (n > 100000) { msg.textContent = "Please use 100,000 numbers or fewer."; return; }
+  if (!$("from").value || !$("to").value) { msg.textContent = "Please choose both timespan dates."; return; }
+  const from = parseDate($("from").value), to = parseDate($("to").value);
+  if (to < from) { msg.textContent = "The end date must be on or after the start date."; return; }
+  const allowed = [...document.querySelectorAll("#days input:checked")].map(c => Number(c.value));
+  if (!allowed.length) { msg.textContent = "Select at least one day of the week."; return; }
+  const days = eligibleDays(from, to, allowed);
+  if (!days.length) { msg.textContent = "No selected weekdays fall inside that timespan."; return; }
+
+  const nums = generate(target, n, spread);
+  const dates = pickDates(days, n);
+  current = dates.map((d, i) => ({ date: d, value: nums[i] }));
+
+  $("range").textContent = "Range: " + (target - spread).toFixed(2) + " to " + (target + spread).toFixed(2) +
+    "  |  " + days.length + " eligible days in timespan";
+  $("rows").innerHTML = current.map((r, i) =>
+    "<tr><td>" + (i + 1) + "</td><td>" + fmt(r.date) + "</td><td>" + DAY[r.date.getDay()] + "</td><td>" + r.value.toFixed(2) + "</td></tr>").join("");
+  $("avgOut").textContent = (nums.reduce((s, v) => s + v, 0) / n).toFixed(2);
+  $("out").style.display = "block";
+  if (n > days.length) {
+    msg.style.color = "#b54708";
+    msg.textContent = "Note: there are more numbers than eligible days, so some dates repeat.";
+  }
+}
+
+$("go").addEventListener("click", run);
+$("copy").addEventListener("click", () => {
+  if (!current.length) return;
+  const text = current.map(r => fmt(r.date) + "\t" + r.value.toFixed(2)).join("\n");
+  navigator.clipboard.writeText(text);
+  $("msg").style.color = "#067647";
+  $("msg").textContent = "Copied. Paste into Excel or anywhere.";
+  setTimeout(() => { $("msg").textContent = ""; $("msg").style.color = ""; }, 2000);
+});
+
+// Default timespan: the current month
+(function () {
+  const t = new Date();
+  const iso = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  $("from").value = iso(new Date(t.getFullYear(), t.getMonth(), 1));
+  $("to").value = iso(new Date(t.getFullYear(), t.getMonth() + 1, 0));
+})();
+</script>
+</body>
+</html>
